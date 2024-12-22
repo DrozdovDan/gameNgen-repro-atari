@@ -18,6 +18,8 @@ DEFAULT_NUM_INFERENCE_STEPS = 10
 MAX_NOISE_LEVEL = 0.7
 NUM_BUCKETS = 10
 
+PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
+
 # Repo name for dumping model artifacts
 REPO_NAME = "arnaudstiegler/sd-model-gameNgen"
 
@@ -26,6 +28,6 @@ VALIDATION_PROMPT = "video game doom image, high quality, 4k, high resolution"
 
 # Datasets
 TRAINING_DATASET_DICT = {
-    "small": "arnaudstiegler/vizdoom-episode",
-    "large": "arnaudstiegler/vizdoom-episode-large",
+    "small": "arnaudstiegler/vizdoom-5-episodes-skipframe-4-lvl5",
+    "large": "arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5",
 }

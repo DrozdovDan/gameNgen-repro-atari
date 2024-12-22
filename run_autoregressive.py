@@ -4,12 +4,11 @@ import random
 import numpy as np
 import torch
 from diffusers.image_processor import VaeImageProcessor
-from loguru import logger
 from PIL import Image
 from tqdm import tqdm
 
 from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from dataset import get_single_batch
+from dataset import EpisodeDataset, collate_fn
 from run_inference import (
     decode_and_postprocess,
     encode_conditioning_frames,
@@ -17,45 +16,23 @@ from run_inference import (
 )
 from model import load_model
 
-# Action 0: TURN_LEFT
-# Action 1: TURN_RIGHT
-# Action 2: MOVE_RIGHT
-# Action 3: MOVE_RIGHT + TURN_LEFT
-# Action 4: MOVE_RIGHT + TURN_RIGHT
-# Action 5: MOVE_LEFT
-# Action 6: MOVE_LEFT + TURN_LEFT
-# Action 7: MOVE_LEFT + TURN_RIGHT
-# Action 8: MOVE_FORWARD
-# Action 9: MOVE_FORWARD + TURN_LEFT
-# Action 10: MOVE_FORWARD + TURN_RIGHT
-# Action 11: MOVE_FORWARD + MOVE_RIGHT
-# Action 12: MOVE_FORWARD + MOVE_RIGHT + TURN_LEFT
-# Action 13: MOVE_FORWARD + MOVE_RIGHT + TURN_RIGHT
-# Action 14: MOVE_FORWARD + MOVE_LEFT
-# Action 15: MOVE_FORWARD + MOVE_LEFT + TURN_LEFT
-# Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
-# Action 17: ATTACK
-
-'''
-Built action space of size 18 from buttons [<Button.ATTACK: 0> <Button.MOVE_FORWARD: 13> <Button.MOVE_LEFT: 11>
- <Button.MOVE_RIGHT: 10> <Button.TURN_RIGHT: 14> <Button.TURN_LEFT: 15>]
-'''
-
+"""Action mapping for the Doom environment:
+Built action space of size 18 from buttons [
+    <Button.ATTACK: 0> 
+    <Button.MOVE_FORWARD: 13> 
+    <Button.MOVE_LEFT: 11>
+    <Button.MOVE_RIGHT: 10>
+    <Button.TURN_RIGHT: 14>
+    <Button.TURN_LEFT: 15>
+    ]
 """
-0: ?
-1: right
-2: move right
-3: unclear
-4: ?
-5: move left
-6: turn left
-7: turn right?
 
-"""
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
+
+EPISODE_LENGTH = 30
 
 
 def generate_rollout(
@@ -104,7 +81,7 @@ def generate_rollout(
 
     # Decode all latents to images
     all_images = []
-    for latent in all_latents[BUFFER_SIZE:]:  # Skip the initial context frames
+    for latent in all_latents:  # Skip the initial context frames
         all_images.append(
             decode_and_postprocess(
                 vae=vae, image_processor=image_processor, latents=latent
@@ -122,42 +99,24 @@ def main(model_folder: str) -> None:
         else "cpu"
     )
 
-    scenarios = {
-        # TODO: add more scenarios
-        # 'only_forward': [8]*30,
-        "forward_attack_forward_attack": [
-            1,
-            1,
-            1,
-            1,
-            8,
-            8,
-            8,
-            8,
-            8,
-            17,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-        ],
-    }
+    dataset = EpisodeDataset(TRAINING_DATASET_DICT["small"])
+    start_indices = [
+        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)
+    ]
 
-    batch = get_single_batch(TRAINING_DATASET_DICT["small"])
-    for scenario_name, actions in scenarios.items():
+    for start_idx in start_indices:
+        # Collate to ge the right tensor dims
+        batch = collate_fn([dataset[start_idx]])
+        actions = [
+            dataset[i]["input_ids"][-1].item()
+            for i in range(
+                start_idx + BUFFER_SIZE, start_idx + BUFFER_SIZE + EPISODE_LENGTH
+            )
+        ]
+
         unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
             model_folder, device=device
         )
-        logger.info(f"Generating rollout forscenario {scenario_name}")
 
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
@@ -186,7 +145,7 @@ def main(model_folder: str) -> None:
         )
 
         all_images[0].save(
-            f"rollout_{scenario_name}.gif",
+            f"rollouts/rollout_{start_idx}.gif",
             save_all=True,
             append_images=all_images[1:],
             duration=100,  # 100ms per frame
@@ -195,7 +154,6 @@ def main(model_folder: str) -> None:
 
 
 if __name__ == "__main__":
-    # TODO: extract all that to a main function
     parser = argparse.ArgumentParser(
         description="Run inference with customizable parameters"
     )

@@ -1,133 +1,157 @@
+from datetime import datetime
+import argparse
+
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from datasets import load_dataset
 from diffusers import AutoencoderKL
-from torchvision import transforms
-from PIL import Image
-import io
-import base64
+from torch import optim
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import get_cosine_schedule_with_warmup
+from config_sd import PRETRAINED_MODEL_NAME_OR_PATH
+
 import wandb
-from config_sd import HEIGHT, WIDTH
-from tqdm import tqdm   
+from dataset import preprocess_train
 
-# Constants
-BATCH_SIZE = 8
+# Fine-tuning parameters
+NUM_EPOCHS = 2
+NUM_WARMUP_STEPS = 500
+BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
-NUM_EPOCHS = 10
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Load the dataset
-dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
-train_dataset = dataset["train"]
-
-# Define image transformations
-transform = transforms.Compose([
-    transforms.Resize((HEIGHT, WIDTH),
-                            interpolation=transforms.InterpolationMode.BILINEAR),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5], [0.5]),
-])
+WEIGHT_DECAY = 1e-5
+GRADIENT_CLIP_NORM = 1.0
+EVAL_STEP = 1000
 
 
-# Custom dataset class
-class CustomDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, transform):
-        self.dataset = dataset
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        image_list = self.dataset[idx]["images"]
-        image = Image.open(io.BytesIO(base64.b64decode(image_list[0]))).convert("RGB")
-        return self.transform(image)
-
-# Create dataset and dataloader
-custom_dataset = CustomDataset(train_dataset, transform)
-dataloader = DataLoader(custom_dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-# Load the pre-trained VAE
-PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
-vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                        subfolder="vae").to(DEVICE)
-# Load the saved encoder state dictionary
-decoder_state_dict = torch.load("trained_vae_decoder.pth")
-
-# Load the state dictionary into the model's encoder
-vae.decoder.load_state_dict(decoder_state_dict)
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Fine-tune VAE model")
+    parser.add_argument(
+        "--hf_model_folder",
+        type=str,
+        required=True,
+        help="HuggingFace model folder to save the model to",
+    )
+    return parser.parse_args()
 
 
-# Freeze the encoder
-for param in vae.encoder.parameters():
-    param.requires_grad = False
-
-# Define loss function and optimizer
-criterion = nn.MSELoss()
-optimizer = optim.Adam(vae.decoder.parameters(), lr=LEARNING_RATE)
+def make_decoder_trainable(model: AutoencoderKL):
+    for param in model.encoder.parameters():
+        param.requires_grad_(False)
+    for param in model.decoder.parameters():
+        param.requires_grad_(True)
 
 
-# Initialize wandb
-wandb.init(project="vae-training", name="vae-mse-loss")
-try:
+def eval_model(model: AutoencoderKL, test_loader: DataLoader) -> float:
+    model.eval()
+    with torch.no_grad():
+        test_loss = 0
+        progress_bar = tqdm(test_loader, desc=f"Evaluating")
+
+        for batch in progress_bar:
+            data = batch["pixel_values"].to(model.device)
+            reconstruction = model(data).sample
+            loss = F.mse_loss(reconstruction, data, reduction="mean")
+            test_loss += loss.item()
+
+            recon = model.decode(model.encode(data).latent_dist.sample()).sample
+            wandb.log(
+                {
+                    "original": [wandb.Image(img) for img in data],
+                    "reconstructed": [wandb.Image(img) for img in recon],
+                }
+            )
+        return test_loss / len(test_loader)
+
+
+def main():
+    args = parse_args()
+    wandb.init(
+        project="gamengen-vae-training",
+        config={
+            # Model parameters
+            "model": PRETRAINED_MODEL_NAME_OR_PATH,
+            # Training parameters
+            "num_epochs": NUM_EPOCHS,
+            "eval_step": EVAL_STEP,
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LEARNING_RATE,
+            "weight_decay": WEIGHT_DECAY,
+            "warmup_epochs": NUM_WARMUP_STEPS,
+            "gradient_clip_norm": GRADIENT_CLIP_NORM,
+            "hf_model_folder": args.hf_model_folder,
+        },
+        name=f"vae-finetuning-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
+    )
+
+    # Dataset Setup
+    dataset = load_dataset("arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5")
+    split_dataset = dataset["train"].train_test_split(test_size=500, seed=42)
+    train_dataset = split_dataset["train"].with_transform(preprocess_train)
+    test_dataset = split_dataset["test"].with_transform(preprocess_train)
+    train_loader = DataLoader(
+        train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
+    )
+    # Model Setup
+    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="vae")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = vae.to(device)
+    make_decoder_trainable(model)
+    # Optimizer Setup
+    optimizer = optim.AdamW(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+    )
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=NUM_WARMUP_STEPS,
+        num_training_steps=NUM_EPOCHS * len(train_loader),
+    )
+
+    step = 0
     for epoch in range(NUM_EPOCHS):
-        vae.train()
-        total_loss = 0
-        print("starting epoch", epoch)
-        
-        # Wrap the dataloader with tqdm for progress bar
-        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
-        for step, batch in enumerate(progress_bar):
-            batch = batch.to(DEVICE)
-            
-            # Forward pass
-            encoded = vae.encode(batch).latent_dist.sample()
-            decoded = vae.decode(encoded).sample
-            
-            # Compute loss
-            loss = criterion(decoded, batch)
+        train_loss = 0
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS}")
 
-            # Backward pass and optimize
+        for batch in progress_bar:
+            model.train()
+            data = batch["pixel_values"].to(device)
             optimizer.zero_grad()
+
+            reconstruction = model(data).sample
+            loss = F.mse_loss(reconstruction, data, reduction="mean")
+
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_NORM)
             optimizer.step()
+            scheduler.step()
 
-            total_loss += loss.item()
-            
-            wandb.log({"step": step + 1, "step_loss": loss.item()})
+            train_loss += loss.item()
+            current_lr = scheduler.get_last_lr()[0]
 
-            # Update tqdm description with current step loss
-            progress_bar.set_postfix({"step_loss": loss.item()})
+            progress_bar.set_postfix({"loss": loss.item(), "lr": current_lr})
 
-            # Log an example image every 100 steps
-            if (step) % 100 == 0:
-                vae.eval()
-                with torch.no_grad():
-                    sample = batch[:4]  # Take a small batch for logging
-                    recon = vae.decode(vae.encode(sample).latent_dist.sample()).sample
-                    wandb.log({
-                        "original": [wandb.Image(img) for img in sample],
-                        "reconstructed": [wandb.Image(img) for img in recon]
-                    })
-                vae.train()
+            wandb.log(
+                {
+                    "train_loss": loss.item(),
+                    "learning_rate": current_lr,
+                }
+            )
 
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {avg_loss:.4f}")
+            step += 1
+            if step % EVAL_STEP == 0:
+                test_loss = eval_model(model, test_loader)
+                # save model to hub
+                model.save_pretrained(
+                    "test",
+                    repo_id=args.hf_model_folder,
+                    push_to_hub=True,
+                )
+                wandb.log({"test_loss": test_loss})
 
-        # Log epoch loss
-        wandb.log({"epoch": epoch+1, "epoch_loss": avg_loss})
 
-except KeyboardInterrupt:
-    print("Training interrupted. Saving model...")
-
-finally:
-    # Save the trained decoder
-    torch.save(vae.decoder.state_dict(), "trained_vae_decoder.pth")
-    print("Model saved.")
-
-    # Finish wandb run
-    wandb.finish()
-
-print("Training completed!")
+if __name__ == "__main__":
+    main()
