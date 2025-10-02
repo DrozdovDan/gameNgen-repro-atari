@@ -32,7 +32,7 @@ torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
 
-EPISODE_LENGTH = 30
+EPISODE_LENGTH = 100
 
 
 def generate_rollout(
@@ -99,9 +99,9 @@ def main(model_folder: str) -> None:
         else "cpu"
     )
 
-    dataset = EpisodeDataset(TRAINING_DATASET_DICT["small"])
+    dataset = EpisodeDataset('dataset_10episodes.pt')
     start_indices = [
-        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)
+        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(5)
     ]
 
     for start_idx in start_indices:

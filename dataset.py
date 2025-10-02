@@ -36,20 +36,27 @@ def collate_fn(examples):
 
 
 def preprocess_train(examples):
-    images = [
-            IMG_TRANSFORMS(Image.open(io.BytesIO(img)).convert("RGB"))
-            for img in examples["frames"]
-        ]
+    images = [IMG_TRANSFORMS(Image.fromarray(img)) for img in examples["frames"]]
 
-    actions = torch.tensor(examples["actions"]) if isinstance(examples["actions"], list) else examples["actions"]
+    actions = torch.tensor(examples["actions"])
     return {"pixel_values": images, "input_ids": actions}
 
+class TMPDataset(torch.utils.data.Dataset):
+
+    def __init__(self, data):
+        self.data = preprocess_train(data)
+
+    def __len__(self):
+        return len(self.data['input_ids'])
+    
+    def __getitem__(self, idx):
+        return {"pixel_values": self.data["pixel_values"][idx], "input_ids": self.data["input_ids"][idx]}
 
 class EpisodeDataset:
     def __init__(self, dataset_name: str):
-        self.dataset = load_dataset(dataset_name)['train']
+        self.dataset = torch.load(dataset_name, weights_only=False)
         self.action_dim = max(action for action in self.dataset['actions'])
-        self.dataset = self.dataset.with_transform(preprocess_train)
+        self.dataset = TMPDataset(self.dataset)
 
     def __len__(self) -> int:
         return len(self.dataset)

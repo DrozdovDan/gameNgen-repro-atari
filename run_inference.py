@@ -253,7 +253,7 @@ def main(model_folder: str) -> None:
         model_folder, device
     )
 
-    batch = get_single_batch(TRAINING_DATASET_DICT["small"])
+    batch = get_single_batch(TRAINING_DATASET_DICT["small-atari"])
 
     img = run_inference_img_conditioning_with_params(
         unet,

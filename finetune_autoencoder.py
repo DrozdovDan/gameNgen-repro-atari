@@ -12,10 +12,11 @@ from transformers import get_cosine_schedule_with_warmup
 from config_sd import PRETRAINED_MODEL_NAME_OR_PATH
 
 import wandb
-from dataset import preprocess_train
+from dataset import preprocess_train, TMPDataset
+import os
 
 # Fine-tuning parameters
-NUM_EPOCHS = 2
+NUM_EPOCHS = 10
 NUM_WARMUP_STEPS = 500
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
@@ -56,17 +57,20 @@ def eval_model(model: AutoencoderKL, test_loader: DataLoader) -> float:
             test_loss += loss.item()
 
             recon = model.decode(model.encode(data).latent_dist.sample()).sample
+            '''
             wandb.log(
                 {
                     "original": [wandb.Image(img) for img in data],
                     "reconstructed": [wandb.Image(img) for img in recon],
                 }
             )
+            '''
         return test_loss / len(test_loader)
 
 
 def main():
     args = parse_args()
+    '''
     wandb.init(
         project="gamengen-vae-training",
         config={
@@ -84,12 +88,12 @@ def main():
         },
         name=f"vae-finetuning-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
     )
+    '''
 
     # Dataset Setup
-    dataset = load_dataset("arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5")
-    split_dataset = dataset["train"].train_test_split(test_size=500, seed=42)
-    train_dataset = split_dataset["train"].with_transform(preprocess_train)
-    test_dataset = split_dataset["test"].with_transform(preprocess_train)
+    from math import floor, ceil
+    dataset = TMPDataset(torch.load("dataset_10episodes.pt", weights_only=False))
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [floor(len(dataset) * 0.8), ceil(len(dataset) * 0.2)])
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8
     )
@@ -133,13 +137,14 @@ def main():
             current_lr = scheduler.get_last_lr()[0]
 
             progress_bar.set_postfix({"loss": loss.item(), "lr": current_lr})
-
+            '''
             wandb.log(
                 {
                     "train_loss": loss.item(),
                     "learning_rate": current_lr,
                 }
             )
+            '''
 
             step += 1
             if step % EVAL_STEP == 0:
@@ -148,9 +153,14 @@ def main():
                 model.save_pretrained(
                     "test",
                     repo_id=args.hf_model_folder,
-                    push_to_hub=True,
+                    push_to_hub=False,
                 )
+                '''
                 wandb.log({"test_loss": test_loss})
+                '''
+        print(train_loss)
+
+    model.save_pretrained(os.path.join(args.hf_model_folder, "vae"))
 
 
 if __name__ == "__main__":

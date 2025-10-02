@@ -147,7 +147,7 @@ def load_model(
         model_folder, subfolder="noise_scheduler"
     )
 
-    vae = get_ft_vae_decoder()
+    vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae")
     unet = UNet2DConditionModel.from_pretrained(model_folder, subfolder="unet")
 
     assert (
@@ -191,8 +191,8 @@ def save_model(
 
     # Save embedding dimensions
     embedding_info = {
-        "num_embeddings": action_embedding.num_embeddings,
-        "embedding_dim": action_embedding.embedding_dim,
+        "num_embeddings": int(action_embedding.num_embeddings),
+        "embedding_dim": int(action_embedding.embedding_dim),
     }
 
     with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:

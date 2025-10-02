@@ -174,3 +174,10 @@ wandb/
 sd-model-finetuned/
 inference_test/
 rollouts/
+rollouts-wo-aef/
+sd-model-finetuned-atari/
+sd-model-finetuned-atari-2/
+sd-model-finetuned-atari-random/
+test/
+*.pt
+*.png
