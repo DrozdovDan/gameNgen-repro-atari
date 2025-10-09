@@ -37,6 +37,7 @@ from diffusers import DDIMScheduler
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils.import_utils import is_xformers_available
+from peft import LoraConfig
 from huggingface_hub import create_repo
 from packaging import version
 from safetensors.torch import load_file
@@ -512,7 +513,7 @@ def main():
             ).repo_id
 
     # This is a bit wasteful
-    dataset = EpisodeDataset("dataset_10episodes_random_spaceinvaders.pt")
+    dataset = EpisodeDataset(args.dataset_name, 0)
     action_dim = dataset.get_action_dim()
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
@@ -538,7 +539,7 @@ def main():
 
         # Load scheduler configuration
         with open(
-            os.path.join(args.load_pretrained, "scheduler", "scheduler_config.json"),
+            os.path.join(args.load_pretrained, "noise_scheduler", "scheduler_config.json"),
             "r",
         ) as f:
             scheduler_config = json.load(f)
@@ -587,7 +588,7 @@ def main():
             raise ValueError(
                 "xformers is not available. Make sure it is installed correctly"
             )
-
+        
     trainable_params = filter(lambda p: p.requires_grad, unet.parameters())
 
     if args.gradient_checkpointing:
@@ -621,7 +622,7 @@ def main():
 
     if args.skip_action_conditioning:
         optimizer = optimizer_cls(
-            unet.parameters(),
+            trainable_params,
             lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
@@ -629,7 +630,7 @@ def main():
         )
     else:
         optimizer = optimizer_cls(
-            list(unet.parameters()) + list(action_embedding.parameters()),
+            list(trainable_params) + list(action_embedding.parameters()),
             lr=args.learning_rate,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
@@ -637,7 +638,7 @@ def main():
         )
 
     train_dataloader = get_dataloader(
-        dataset_name='dataset_10episodes_random_spaceinvaders.pt',
+        dataset_name=args.dataset_name,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
         shuffle=True,

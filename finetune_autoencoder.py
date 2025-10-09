@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 from config_sd import PRETRAINED_MODEL_NAME_OR_PATH
+import pickle
+from actions_to_tokens import act_to_tok
 
 import wandb
 from dataset import preprocess_train, TMPDataset
@@ -18,7 +20,7 @@ import os
 # Fine-tuning parameters
 NUM_EPOCHS = 10
 NUM_WARMUP_STEPS = 500
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-5
 GRADIENT_CLIP_NORM = 1.0
@@ -92,7 +94,10 @@ def main():
 
     # Dataset Setup
     from math import floor, ceil
-    dataset = TMPDataset(torch.load("dataset_10episodes.pt", weights_only=False))
+    with open('panorama_dataset.pkl', 'rb') as f:
+        dataset = pickle.load(f)['sessions'][2]
+    dataset['actions'] = [act_to_tok[tuple(action)] for action in dataset['actions']]
+    dataset = TMPDataset(dataset)
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [floor(len(dataset) * 0.8), ceil(len(dataset) * 0.2)])
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8

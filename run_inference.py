@@ -190,6 +190,7 @@ def decode_and_postprocess(
     image = image_processor.postprocess(
         image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
     )[0]
+    
     return image
 
 

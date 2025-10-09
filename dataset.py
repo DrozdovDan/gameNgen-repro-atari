@@ -5,6 +5,10 @@ from torchvision import transforms
 from config_sd import HEIGHT, WIDTH, BUFFER_SIZE, ZERO_OUT_ACTION_CONDITIONING_PROB
 from datasets import load_dataset
 from data_augmentation import no_img_conditioning_augmentation
+import pickle
+from actions_to_tokens import act_to_tok
+import numpy as np
+from skimage.transform import downscale_local_mean
 
 
 IMG_TRANSFORMS = transforms.Compose(
@@ -36,7 +40,7 @@ def collate_fn(examples):
 
 
 def preprocess_train(examples):
-    images = [IMG_TRANSFORMS(Image.fromarray(img)) for img in examples["frames"]]
+    images = [IMG_TRANSFORMS(Image.fromarray(np.round(downscale_local_mean(img, (2, 2, 1))).astype(np.uint8))) for img in examples["frames"]]
 
     actions = torch.tensor(examples["actions"])
     return {"pixel_values": images, "input_ids": actions}
@@ -53,8 +57,10 @@ class TMPDataset(torch.utils.data.Dataset):
         return {"pixel_values": self.data["pixel_values"][idx], "input_ids": self.data["input_ids"][idx]}
 
 class EpisodeDataset:
-    def __init__(self, dataset_name: str):
-        self.dataset = torch.load(dataset_name, weights_only=False)
+    def __init__(self, dataset_name: str, session_idx: int):
+        with open(dataset_name, 'rb') as f:
+            self.dataset = pickle.load(f)['sessions'][session_idx]
+        self.dataset['actions'] = [act_to_tok[tuple(sorted(list(action)))] for action in self.dataset['actions']]
         self.action_dim = max(action for action in self.dataset['actions'])
         self.dataset = TMPDataset(self.dataset)
 
@@ -72,7 +78,7 @@ class EpisodeDataset:
 
 
 def get_dataloader(dataset_name: str, batch_size: int = 1, num_workers: int = 1, shuffle: bool = False) -> torch.utils.data.DataLoader:
-    dataset = EpisodeDataset(dataset_name)
+    dataset = EpisodeDataset(dataset_name, 0)
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn, num_workers=num_workers)
 
 def get_single_batch(dataset_name: str) -> dict[str, torch.Tensor]:

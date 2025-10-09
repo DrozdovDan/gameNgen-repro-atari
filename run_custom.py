@@ -6,16 +6,19 @@ import torch
 from diffusers.image_processor import VaeImageProcessor
 from PIL import Image
 from tqdm import tqdm
-from skimage.metrics import peak_signal_noise_ratio
 
-from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from dataset import EpisodeDataset, collate_fn, IMG_TRANSFORMS
+from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT, WIDTH, HEIGHT, ZERO_OUT_ACTION_CONDITIONING_PROB
+from dataset import IMG_TRANSFORMS
+from data_augmentation import no_img_conditioning_augmentation
 from run_inference import (
     decode_and_postprocess,
     encode_conditioning_frames,
     next_latent,
 )
 from model import load_model
+from actions_to_tokens import act_to_tok
+import os
+from skimage.transform import downscale_local_mean
 
 """Action mapping for the Doom environment:
 Built action space of size 18 from buttons [
@@ -33,7 +36,7 @@ torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
 
-EPISODE_LENGTH = 100
+EPISODE_LENGTH = 200
 
 
 def generate_rollout(
@@ -47,7 +50,7 @@ def generate_rollout(
     initial_action_context: torch.Tensor,
 ) -> list[Image]:
     device = unet.device
-    all_latents = []
+    all_latents = [initial_frame_context_i.unsqueeze(0) for initial_frame_context_i in initial_frame_context]
     current_actions = initial_action_context
     context_latents = initial_frame_context
 
@@ -90,6 +93,61 @@ def generate_rollout(
         )
     return all_images
 
+def collate_fn(examples):
+    processed_images = []
+    for example in examples:
+        # BUFFER_SIZE conditioning frames + 1 target frame
+        processed_images.append(
+            torch.stack(example["pixel_values"]))
+
+    # Stack all examples
+    # images has shape: (batch_size, frame_buffer, 3, height, width)
+    images = torch.stack(processed_images)
+    images = images.to(memory_format=torch.contiguous_format).float()
+
+    # TODO: UGLY HACK
+    images = no_img_conditioning_augmentation(images, prob=ZERO_OUT_ACTION_CONDITIONING_PROB)
+    return {
+        "pixel_values": images,
+    }
+
+def preprocess_train(examples):
+    images = [IMG_TRANSFORMS(Image.fromarray(np.round(downscale_local_mean(img, (2, 2, 1))).astype(np.uint8))) for img in examples["frames"]]
+
+    return {"pixel_values": images}
+
+class TMPDataset(torch.utils.data.Dataset):
+
+    def __init__(self, data):
+        self.data = preprocess_train(data)
+
+    def __len__(self):
+        return len(self.data['pixel_values'])
+    
+    def __getitem__(self, idx):
+        return {"pixel_values": self.data["pixel_values"][idx]}
+
+class EpisodeDataset:
+    def __init__(self, dataset_name: str):
+        self.dataset = {}
+        self.dataset['frames'] = []
+        for i in range(1, 6):
+            self.dataset['frames'].append(np.asarray(Image.open(os.path.join(dataset_name, f'{i}.png'))))
+            self.dataset['frames'] += [self.dataset['frames'][-1] for _ in range(BUFFER_SIZE - 1)]
+
+        self.dataset = TMPDataset(self.dataset)
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        if idx < BUFFER_SIZE:
+            padding = [IMG_TRANSFORMS(Image.new('RGB', (WIDTH, HEIGHT), color='black')) for _ in range(BUFFER_SIZE - idx)]
+            return {'pixel_values': padding + self.dataset[:idx+1]['pixel_values']}
+        return self.dataset[idx-BUFFER_SIZE:idx+1]
+
+    def get_action_dim(self) -> int:
+        return self.action_dim
 
 def main(model_folder: str) -> None:
     device = torch.device(
@@ -100,26 +158,16 @@ def main(model_folder: str) -> None:
         else "cpu"
     )
 
-    dataset = EpisodeDataset('panorama_dataset.pkl', 2)
     start_indices = [
-        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(10)
+        i for i in range(5)
     ]
 
-    lpip = [[] for _ in start_indices] 
-    psnr = [[] for _ in start_indices]
-
-    import lpips
-    loss_fn_alex = lpips.LPIPS(net='alex')
+    dataset = EpisodeDataset('test_dataset/test')
 
     for idx, start_idx in enumerate(start_indices):
         # Collate to ge the right tensor dims
-        batch = collate_fn([dataset[start_idx]])
-        actions = [
-            dataset[i]["input_ids"][-1].item()
-            for i in range(
-                start_idx + BUFFER_SIZE, start_idx + BUFFER_SIZE + EPISODE_LENGTH
-            )
-        ]
+        batch = collate_fn([dataset[start_idx * BUFFER_SIZE + BUFFER_SIZE]])
+        actions = [act_to_tok[('rotate_right', )] for _ in range(EPISODE_LENGTH // 2)] + [act_to_tok[('rotate_left', )] for _ in range(EPISODE_LENGTH // 2)]
 
         unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
             model_folder, device=device
@@ -138,7 +186,7 @@ def main(model_folder: str) -> None:
 
         # Store all generated latents - split context frames into individual tensors
         initial_frame_context = context_latents.squeeze(0)  # [BUFFER_SIZE, 4, 30, 40]
-        initial_action_context = batch["input_ids"].squeeze(0)[:BUFFER_SIZE].to(device)
+        initial_action_context = torch.Tensor([act_to_tok[tuple()] for _ in range(BUFFER_SIZE)]).int().to(device)
 
         all_images = generate_rollout(
             unet=unet,
@@ -152,23 +200,12 @@ def main(model_folder: str) -> None:
         )
 
         all_images[0].save(
-            f"rollouts/rollout_{start_idx}.gif",
+            f"custom_rollouts-2/custom_rollout_{start_idx}.gif",
             save_all=True,
             append_images=all_images[1:],
             duration=50,  # 100ms per frame
             loop=0,
         )
-
-        for i in range(BUFFER_SIZE, EPISODE_LENGTH):
-            lpip[idx].append(loss_fn_alex(IMG_TRANSFORMS(all_images[i]), dataset[start_idx + i]['pixel_values'][-1]).item())
-            psnr[idx].append(peak_signal_noise_ratio(IMG_TRANSFORMS(all_images[i]).numpy(), dataset[start_idx + i]['pixel_values'][-1].numpy()).item())
-
-    lpip = np.mean(lpip, axis=0).flatten()
-    psnr = np.mean(psnr, axis=0).flatten()
-    
-    np.save('tmp_lpip.npy', lpip)
-    np.save('tmp_psnr.npy', psnr)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

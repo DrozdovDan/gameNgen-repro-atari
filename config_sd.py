@@ -1,11 +1,11 @@
 # Number of past frames/actions we provide
 # Beware that there's a hard limit coming from the dataset
-BUFFER_SIZE = 3
+BUFFER_SIZE = 4
 # Given by the paper
 ZERO_OUT_ACTION_CONDITIONING_PROB = 0.1
 
-HEIGHT = 240
-WIDTH = 160
+HEIGHT = 304
+WIDTH = 776
 
 # CFG ratio
 CFG_GUIDANCE_SCALE = 1.5
@@ -30,5 +30,5 @@ VALIDATION_PROMPT = "video game atari space invaders image, high quality, 4k, hi
 TRAINING_DATASET_DICT = {
     "small": "arnaudstiegler/vizdoom-5-episodes-skipframe-4-lvl5",
     "large": "arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5",
-    "small-atari": "dataset_10episodes.pt"
+    "small-atari": "dataset_Enduro_10episodes.pt"
 }

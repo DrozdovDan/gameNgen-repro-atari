@@ -183,7 +183,7 @@ test/
 *.png
 sd-*
 rollouts-*
-*-rollouts
+custom_*
 test_dataset
 vae
 *.pkl
