@@ -181,3 +181,9 @@ sd-model-finetuned-atari-random/
 test/
 *.pt
 *.png
+sd-*
+rollouts-*
+*-rollouts
+test_dataset
+vae
+*.pkl
