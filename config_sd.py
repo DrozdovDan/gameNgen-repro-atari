@@ -30,5 +30,5 @@ VALIDATION_PROMPT = "video game atari space invaders image, high quality, 4k, hi
 TRAINING_DATASET_DICT = {
     "small": "arnaudstiegler/vizdoom-5-episodes-skipframe-4-lvl5",
     "large": "arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5",
-    "small-atari": "dataset_10episodes.pt"
+    "small-atari": "dataset_Enduro_10episodes.pt"
 }

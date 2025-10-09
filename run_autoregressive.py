@@ -6,9 +6,10 @@ import torch
 from diffusers.image_processor import VaeImageProcessor
 from PIL import Image
 from tqdm import tqdm
+from skimage.metrics import peak_signal_noise_ratio
 
 from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from dataset import EpisodeDataset, collate_fn
+from dataset import EpisodeDataset, collate_fn, IMG_TRANSFORMS
 from run_inference import (
     decode_and_postprocess,
     encode_conditioning_frames,
@@ -99,12 +100,18 @@ def main(model_folder: str) -> None:
         else "cpu"
     )
 
-    dataset = EpisodeDataset('dataset_10episodes.pt')
+    dataset = EpisodeDataset('dataset_Enduro_10episodes.pt')
     start_indices = [
-        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(5)
+        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(10)
     ]
 
-    for start_idx in start_indices:
+    lpip = [[] for _ in start_indices] 
+    psnr = [[] for _ in start_indices]
+
+    import lpips
+    loss_fn_alex = lpips.LPIPS(net='alex')
+
+    for idx, start_idx in enumerate(start_indices):
         # Collate to ge the right tensor dims
         batch = collate_fn([dataset[start_idx]])
         actions = [
@@ -151,6 +158,16 @@ def main(model_folder: str) -> None:
             duration=100,  # 100ms per frame
             loop=0,
         )
+
+        for i in range(BUFFER_SIZE, EPISODE_LENGTH):
+            lpip[idx].append(loss_fn_alex(IMG_TRANSFORMS(all_images[i]), dataset[start_idx + i]['pixel_values'][-1]).item())
+            psnr[idx].append(peak_signal_noise_ratio(IMG_TRANSFORMS(all_images[i]).numpy(), dataset[start_idx + i]['pixel_values'][-1].numpy()).item())
+
+    lpip = np.mean(lpip, axis=0).flatten()
+    psnr = np.mean(psnr, axis=0).flatten()
+    
+    np.save('tmp_lpip.npy', lpip)
+    np.save('tmp_psnr.npy', psnr)
 
 
 if __name__ == "__main__":

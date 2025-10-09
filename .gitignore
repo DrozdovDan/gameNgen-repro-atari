@@ -175,9 +175,9 @@ sd-model-finetuned/
 inference_test/
 rollouts/
 rollouts-wo-aef/
-sd-model-finetuned-atari/
-sd-model-finetuned-atari-2/
-sd-model-finetuned-atari-random/
+sd-*
 test/
 *.pt
 *.png
+dataset_*
+rollouts-*

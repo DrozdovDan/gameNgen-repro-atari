@@ -92,7 +92,7 @@ def main():
 
     # Dataset Setup
     from math import floor, ceil
-    dataset = TMPDataset(torch.load("dataset_10episodes.pt", weights_only=False))
+    dataset = TMPDataset(torch.load("dataset_Enduro_10episodes.pt", weights_only=False))
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [floor(len(dataset) * 0.8), ceil(len(dataset) * 0.2)])
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8
